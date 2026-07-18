@@ -6,8 +6,7 @@ Code** with a complete CI/CD pipeline, observability, security, autoscaling, and
 AI **voice ChatOps** interface.
 
 Everything is reproducible from scratch on any AWS account — see [SETUP.md](SETUP.md).
-The rendered architecture diagram is in [ARCHITECTURE.md](ARCHITECTURE.md); the design
-rationale, trade-offs and gotchas are in [DECISIONS.md](DECISIONS.md).
+The rendered architecture diagram is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -75,8 +74,7 @@ GreenCityAWS/
 ├─ setup-cluster.ps1   deploys the whole k8s layer on top of the running cluster
 ├─ setup-cluster.env.example
 ├─ windows-agent/      native Windows voice assistant (tray app)
-├─ SETUP.md            from-scratch deployment guide
-└─ DECISIONS.md        design rationale, trade-offs, gotchas, mentor Q&A
+└─ SETUP.md            from-scratch deployment guide
 ```
 
 ## 4. CI/CD pipeline
