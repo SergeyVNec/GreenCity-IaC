@@ -1,0 +1,59 @@
+# Terraform state (lives remotely in S3; never commit it)
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Provider plugins / lock (mentor: keep the hash lock file out of the repo)
+.terraform/
+.terraform.lock.hcl
+
+# Variable files with REAL values (commit only the *.example)
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# CLI override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# AWS credentials — NEVER commit
+.aws/
+*.pem
+
+# Cluster-setup API keys — do NOT commit (copy from setup-cluster.env.example)
+setup-cluster.env
+bootstrap.env
+
+# bootstrap/ folder keeps its state locally (per-operator)
+bootstrap/.terraform/
+bootstrap/*.tfstate
+bootstrap/*.tfstate.*
+
+# Root-level scratch SSM/ops helper JSONs (generated on the fly; not part of the
+# reproducible flow — the source of truth is modules/k3s/manifests/**).
+/*.json
+
+# Ops helper files that hold real secrets — do NOT commit
+dd-secret.json
+mcp-apply.json
+obs-secrets.json
+grafana-secret-apply.json
+set-key.json
+set-voice-keys.json
+scratch_*.txt
+scratch_*
+
+# Windows voice agent — local secrets and build artifacts
+windows-agent/.env
+windows-agent/.venv/
+windows-agent/env/
+windows-agent/dist/
+windows-agent/build/
+windows-agent/*.spec
+
+DECISIONS.md

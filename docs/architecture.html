@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body>
+<title>GreenCity — AWS DevOps Architecture</title>
+<style>
+  :root{
+    --bg:#f4f7f5; --surface:#ffffff; --surface-2:#f0f4f1;
+    --ink:#14201a; --muted:#5a6b62; --border:#d8e2dc; --shadow:0 1px 2px rgba(20,40,30,.06),0 8px 24px rgba(20,40,30,.05);
+    --accent:#16a34a;
+    --h-source:#64748b; --h-ci:#2563eb; --h-reg:#0e9aa7; --h-app:#16a34a;
+    --h-sec:#dc2626; --h-obs:#7c3aed; --h-ops:#d97706; --h-aws:#475569;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d1411; --surface:#151f1a; --surface-2:#111a15;
+      --ink:#e7efea; --muted:#8fa298; --border:#25322b; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+      --accent:#34d27f;
+      --h-source:#94a3b8; --h-ci:#5b8bf7; --h-reg:#2bc0cf; --h-app:#34d27f;
+      --h-sec:#f26d6d; --h-obs:#a883f2; --h-ops:#f0a93a; --h-aws:#93a3b6;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f4f7f5; --surface:#ffffff; --surface-2:#f0f4f1; --ink:#14201a; --muted:#5a6b62;
+    --border:#d8e2dc; --accent:#16a34a;
+    --h-source:#64748b; --h-ci:#2563eb; --h-reg:#0e9aa7; --h-app:#16a34a; --h-sec:#dc2626; --h-obs:#7c3aed; --h-ops:#d97706; --h-aws:#475569;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d1411; --surface:#151f1a; --surface-2:#111a15; --ink:#e7efea; --muted:#8fa298;
+    --border:#25322b; --accent:#34d27f;
+    --h-source:#94a3b8; --h-ci:#5b8bf7; --h-reg:#2bc0cf; --h-app:#34d27f; --h-sec:#f26d6d; --h-obs:#a883f2; --h-ops:#f0a93a; --h-aws:#93a3b6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 64px}
+  .mono{font-family:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace}
+
+  header.top{margin-bottom:28px}
+  .kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-size:clamp(26px,4vw,40px);margin:.25em 0 .15em;letter-spacing:-.02em;text-wrap:balance;font-weight:800}
+  .sub{color:var(--muted);max-width:70ch;font-size:15px}
+
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:20px 0 30px;font-size:12.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:10px;height:10px;border-radius:3px;background:var(--c)}
+
+  /* flow rail */
+  .rail{display:flex;align-items:stretch;gap:0;flex-wrap:nowrap;overflow-x:auto;padding-bottom:8px}
+  .rail::-webkit-scrollbar{height:8px}
+  .rail::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px}
+  .node{flex:1 0 auto;min-width:150px}
+  .arrow{flex:0 0 auto;align-self:center;color:var(--muted);padding:0 4px;font-size:20px;user-select:none}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    box-shadow:var(--shadow);overflow:hidden}
+  .card .hd{display:flex;align-items:center;gap:8px;padding:10px 14px;font-weight:700;font-size:13.5px;
+    border-left:4px solid var(--c);background:
+      color-mix(in srgb,var(--c) 9%, var(--surface))}
+  .card .bd{padding:10px 14px 13px}
+  .svc{font-size:12.5px;color:var(--ink)}
+  .svc + .svc{margin-top:5px}
+  .port{color:var(--muted)}
+  .tag{display:inline-block;font-size:10.5px;padding:2px 7px;border-radius:999px;font-weight:600;
+    background:color-mix(in srgb,var(--c) 14%,transparent);color:var(--c);margin:2px 4px 0 0}
+
+  .down{display:flex;justify-content:center;color:var(--muted);font-size:22px;margin:6px 0}
+
+  /* cluster */
+  .cluster{border:1.5px dashed color-mix(in srgb,var(--h-app) 45%,var(--border));border-radius:16px;
+    padding:16px;background:color-mix(in srgb,var(--h-app) 5%,var(--surface-2))}
+  .cluster .clbl{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin:0 2px 14px}
+  .cluster .clbl b{font-size:14.5px}
+  .cluster .clbl .meta{font-size:12px;color:var(--muted)}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  @media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:560px){.grid{grid-template-columns:1fr}}
+
+  /* foundation */
+  .foundation{margin-top:20px}
+  .fgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  @media(max-width:900px){.fgrid{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:480px){.fgrid{grid-template-columns:repeat(2,1fr)}}
+  .fcard{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;
+    border-top:3px solid var(--h-aws)}
+  .fcard b{font-size:12.5px;display:block}
+  .fcard span{font-size:11px;color:var(--muted)}
+
+  .band-label{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+    font-weight:700;margin:26px 0 12px;display:flex;align-items:center;gap:10px}
+  .band-label::after{content:"";flex:1;height:1px;background:var(--border)}
+
+  /* client */
+  .client{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-top:14px}
+  .client .card{flex:1 1 320px}
+  .flowline{font-size:12px;color:var(--muted);margin-top:8px}
+  .flowline .mono{color:var(--ink)}
+
+  footer.facts{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:34px}
+  @media(max-width:700px){footer.facts{grid-template-columns:repeat(2,1fr)}}
+  .fact{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .fact .n{font-size:22px;font-weight:800;letter-spacing:-.02em}
+  .fact .l{font-size:12px;color:var(--muted);margin-top:2px}
+  .credit{margin-top:28px;font-size:12px;color:var(--muted);text-align:center}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="kicker">Final DevOps Project · Infrastructure as Code</div>
+    <h1>GreenCity — AWS Platform Architecture</h1>
+    <p class="sub">A 3-service application deployed on AWS entirely as Terraform, with a full CI/CD pipeline (build · code inspection · dependency scanning), six-angle observability, runtime security, autoscaling, and an AI voice ChatOps interface over the cluster.</p>
+  </header>
+
+  <div class="legend">
+    <span><i class="dot" style="--c:var(--h-source)"></i>Source</span>
+    <span><i class="dot" style="--c:var(--h-ci)"></i>CI / CD</span>
+    <span><i class="dot" style="--c:var(--h-reg)"></i>Registry</span>
+    <span><i class="dot" style="--c:var(--h-app)"></i>Application</span>
+    <span><i class="dot" style="--c:var(--h-sec)"></i>Security &amp; scaling</span>
+    <span><i class="dot" style="--c:var(--h-obs)"></i>Observability</span>
+    <span><i class="dot" style="--c:var(--h-ops)"></i>ChatOps</span>
+    <span><i class="dot" style="--c:var(--h-aws)"></i>AWS foundation</span>
+  </div>
+
+  <!-- PIPELINE RAIL -->
+  <div class="band-label">Delivery pipeline</div>
+  <div class="rail">
+    <div class="node card" style="--c:var(--h-source)">
+      <div class="hd">GitHub · 3 repos</div>
+      <div class="bd">
+        <div class="svc">backcore · backuser</div>
+        <div class="svc">frontend (React)</div>
+        <div class="svc port">no webhook rights →</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node card" style="--c:var(--h-ci)">
+      <div class="hd">Jenkins</div>
+      <div class="bd">
+        <div class="svc">pollSCM every ~1 min</div>
+        <div class="svc">orchestrate → notify</div>
+        <div class="svc port">Discord alerts</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node card" style="--c:var(--h-ci)">
+      <div class="hd">AWS CodeBuild</div>
+      <div class="bd">
+        <div class="svc">multi-stage image build</div>
+        <div><span class="tag" style="--c:var(--h-ci)">CCI · SonarQube</span><span class="tag" style="--c:var(--h-ci)">SCA · Trivy</span><span class="tag" style="--c:var(--h-ci)">Quality Gate</span></div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node card" style="--c:var(--h-reg)">
+      <div class="hd">ECR</div>
+      <div class="bd">
+        <div class="svc">scan-on-push</div>
+        <div class="svc">lifecycle policy</div>
+        <div class="svc port">3 image repos</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node card" style="--c:var(--h-app)">
+      <div class="hd">Deploy</div>
+      <div class="bd">
+        <div class="svc">k3s pulls :latest</div>
+        <div class="svc">SSM run-command</div>
+        <div class="svc port">Gate FAIL → no deploy</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="down">↓</div>
+
+  <!-- K3S CLUSTER -->
+  <div class="cluster">
+    <div class="clbl">
+      <b>k3s cluster</b>
+      <span class="meta">4 EC2 nodes · 1 control-plane + 2 agents (t3.small) + 1 observability node (m7i-flex.large, 8&nbsp;GB) · Traefik ingress · ECR token auto-refresh (6h timer)</span>
+    </div>
+    <div class="grid">
+      <div class="card" style="--c:var(--h-app)">
+        <div class="hd">Application <span class="mono port" style="font-weight:500">ns greencity</span></div>
+        <div class="bd">
+          <div class="svc">backcore <span class="port mono">:8080</span></div>
+          <div class="svc">backuser <span class="port mono">:8060</span></div>
+          <div class="svc">frontend ×2 <span class="port mono">:80</span></div>
+          <div class="svc">rabbitmq <span class="port mono">:5672</span></div>
+          <div class="svc port">nginx same-origin proxy (no CORS)</div>
+        </div>
+      </div>
+      <div class="card" style="--c:var(--h-sec)">
+        <div class="hd">Security &amp; scaling</div>
+        <div class="bd">
+          <div class="svc">Pod Security Standards</div>
+          <div class="svc">SecurityContext · seccomp</div>
+          <div class="svc">Falco — runtime eBPF</div>
+          <div class="svc">HPA <span class="port">1→3 / 2→4 CPU</span></div>
+        </div>
+      </div>
+      <div class="card" style="--c:var(--h-obs)">
+        <div class="hd">Observability</div>
+        <div class="bd">
+          <div class="svc">Splunk <span class="port mono">:30800</span></div>
+          <div class="svc">Grafana <span class="port mono">:30300</span></div>
+          <div class="svc">Prometheus</div>
+          <div class="svc">OpenTelemetry <span class="port">→ Splunk/Prom</span></div>
+          <div class="svc">Datadog · SonarQube</div>
+        </div>
+      </div>
+      <div class="card" style="--c:var(--h-ops)">
+        <div class="hd">AI ChatOps</div>
+        <div class="bd">
+          <div class="svc">MCP server <span class="port mono">:30880</span></div>
+          <div class="svc port">9 tools · bearer auth</div>
+          <div class="svc">Hermes agent <span class="port mono">:30890</span></div>
+          <div class="svc port">gpt-4o-mini + MCP</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VOICE CLIENT -->
+  <div class="client">
+    <div class="card" style="--c:var(--h-ops)">
+      <div class="hd">Windows voice assistant</div>
+      <div class="bd">
+        <div class="svc">wake word (openWakeWord, offline) → tray app</div>
+        <div class="flowline">🎙️ <span class="mono">Whisper (Groq)</span> → <span class="mono">gpt-4o-mini + MCP tools</span> → <span class="mono">ElevenLabs</span> 🔊 — no keys on the client</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AWS FOUNDATION -->
+  <div class="foundation">
+    <div class="band-label">AWS foundation (Terraform-managed)</div>
+    <div class="fgrid">
+      <div class="fcard"><b>VPC</b><span>2 public subnets, IGW</span></div>
+      <div class="fcard"><b>RDS PostgreSQL</b><span>password → Secrets Mgr</span></div>
+      <div class="fcard"><b>ALB</b><span>80 / 8080 / 8060</span></div>
+      <div class="fcard"><b>CloudWatch</b><span>alarms · dashboard</span></div>
+      <div class="fcard"><b>Secrets Manager</b><span>+ SSM Param Store</span></div>
+      <div class="fcard"><b>IAM</b><span>least-privilege roles</span></div>
+    </div>
+  </div>
+
+  <!-- FACTS -->
+  <footer class="facts">
+    <div class="fact"><div class="n">62</div><div class="l">Terraform resources, one <span class="mono">apply</span></div></div>
+    <div class="fact"><div class="n">6</div><div class="l">observability tools, non-overlapping</div></div>
+    <div class="fact"><div class="n">S3 + lock</div><div class="l">remote state, native locking</div></div>
+    <div class="fact"><div class="n">from&nbsp;0</div><div class="l">reproducible: destroy → rebuild verified</div></div>
+  </footer>
+
+  <div class="credit">Terraform · k3s · SonarQube · Trivy · Splunk · OpenTelemetry · Prometheus/Grafana · Datadog · Falco · MCP</div>
+</div>
+
+</body>
+</html>

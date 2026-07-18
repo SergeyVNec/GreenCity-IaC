@@ -1,0 +1,70 @@
+# GreenCity Ops MCP server — pod in k3s, exposed via NodePort 30880.
+# Read-only + action tools over the observability/ops surface. Bearer-token guarded.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: mcp-server, namespace: observability }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: mcp-server }
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, delete]
+  - apiGroups: ["apps"]
+    resources: [deployments, deployments/scale]
+    verbs: [get, list, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: mcp-server }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: mcp-server }
+subjects:
+  - { kind: ServiceAccount, name: mcp-server, namespace: observability }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: mcp-server, namespace: observability }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-server } }
+  strategy: { type: Recreate }
+  template:
+    metadata: { labels: { app: mcp-server } }
+    spec:
+      serviceAccountName: mcp-server
+      containers:
+        - name: mcp
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - "pip install --no-cache-dir --root-user-action=ignore mcp boto3 kubernetes requests uvicorn starlette >/tmp/pip.log 2>&1 && exec python /app/server.py"
+          ports:
+            - { containerPort: 8000 }
+          env:
+            - { name: AWS_REGION, value: "us-east-1" }
+            - { name: CODEBUILD_PROJECT, value: "greencity-build" }
+            - { name: SPLUNK_PASSWORD, valueFrom: { secretKeyRef: { name: splunk-secret, key: password } } }
+            - { name: SONAR_TOKEN, valueFrom: { secretKeyRef: { name: mcp-secret, key: sonar-token } } }
+            - { name: MCP_BEARER_TOKEN, valueFrom: { secretKeyRef: { name: mcp-secret, key: bearer-token } } }
+          resources:
+            requests: { memory: "256Mi", cpu: "100m" }
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            failureThreshold: 30
+          volumeMounts:
+            - { name: code, mountPath: /app }
+      volumes:
+        - { name: code, configMap: { name: mcp-code } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-server, namespace: observability }
+spec:
+  type: NodePort
+  selector: { app: mcp-server }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000, nodePort: 30880 }

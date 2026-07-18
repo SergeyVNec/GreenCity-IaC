@@ -1,0 +1,86 @@
+# OpenTelemetry Collector (contrib). Scrapes host metrics and exports them via the
+# debug exporter to its own log — a self-contained OTel pipeline demonstration.
+apiVersion: v1
+kind: Namespace
+metadata: { name: observability }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: otel-config, namespace: observability }
+data:
+  config.yaml: |
+    receivers:
+      hostmetrics:
+        collection_interval: 15s
+        root_path: /hostfs
+        scrapers:
+          cpu: {}
+          memory: {}
+          load: {}
+          filesystem: {}
+          network: {}
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+    processors:
+      batch: {}
+    exporters:
+      debug:
+        verbosity: detailed
+      # Push host metrics into Splunk HEC (metric index created via REST API).
+      splunk_hec/metrics:
+        token: "11111111-2222-3333-4444-555555555555"
+        endpoint: "https://splunk.observability.svc.cluster.local:8088/services/collector"
+        index: "otel_metrics"
+        source: "otel-collector"
+        sourcetype: "otel-metrics"
+        tls:
+          insecure_skip_verify: true
+      # Expose host metrics in Prometheus format for Prometheus to scrape.
+      prometheus:
+        endpoint: 0.0.0.0:8889
+    service:
+      pipelines:
+        metrics:
+          receivers: [hostmetrics, otlp]
+          processors: [batch]
+          exporters: [debug, splunk_hec/metrics, prometheus]
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: otel-collector, namespace: observability }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: otel-collector } }
+  template:
+    metadata: { labels: { app: otel-collector } }
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:latest
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - { containerPort: 4317 }
+            - { containerPort: 4318 }
+            - { containerPort: 8889 }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otel }
+            - { name: hostfs, mountPath: /hostfs, readOnly: true }
+      volumes:
+        - { name: config, configMap: { name: otel-config } }
+        - { name: hostfs, hostPath: { path: / } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: otel-collector, namespace: observability }
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: prom, port: 8889, targetPort: 8889 }

@@ -1,0 +1,56 @@
+#!/bin/bash
+set -euxo pipefail
+
+# AWS CLI (to fetch the ECR token at runtime via the instance role)
+dnf install -y unzip
+if ! command -v aws >/dev/null 2>&1; then
+  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install
+fi
+
+# Let containerd pull from ECR (token fetched now via IAM — valid ~12h)
+mkdir -p /etc/rancher/k3s
+PASS=$(aws ecr get-login-password --region ${region})
+cat >/etc/rancher/k3s/registries.yaml <<REG
+configs:
+  "${ecr_registry}":
+    auth:
+      username: AWS
+      password: $PASS
+REG
+
+# ECR tokens expire ~12h — auto-refresh registries.yaml hourly and reload k3s.
+cat >/usr/local/bin/refresh-ecr.sh <<'EOF'
+#!/bin/bash
+set -e
+PASS=$(aws ecr get-login-password --region ${region})
+printf 'configs:\n  "%s":\n    auth:\n      username: AWS\n      password: %s\n' "${ecr_registry}" "$PASS" > /etc/rancher/k3s/registries.yaml
+if systemctl is-active --quiet k3s; then systemctl restart k3s; else systemctl restart k3s-agent; fi
+EOF
+chmod +x /usr/local/bin/refresh-ecr.sh
+cat >/etc/systemd/system/refresh-ecr.service <<'EOF'
+[Unit]
+Description=Refresh ECR credentials for k3s
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/refresh-ecr.sh
+EOF
+cat >/etc/systemd/system/refresh-ecr.timer <<'EOF'
+[Unit]
+Description=Refresh ECR credentials every 6h (token lives ~12h)
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now refresh-ecr.timer
+
+# Public IP for the API cert SAN (IMDSv2)
+IMDS=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS" http://169.254.169.254/latest/meta-data/public-ipv4)
+
+# k3s server (Traefik ingress + ServiceLB come bundled)
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --tls-san $PUBLIC_IP --write-kubeconfig-mode 644" K3S_TOKEN="${k3s_token}" sh -

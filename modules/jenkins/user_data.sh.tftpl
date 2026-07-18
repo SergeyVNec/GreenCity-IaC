@@ -1,0 +1,115 @@
+#!/bin/bash
+set -euxo pipefail
+
+# --- packages ---
+dnf install -y java-21-amazon-corretto-devel git fontconfig unzip
+
+# AWS CLI v2
+if ! command -v aws >/dev/null 2>&1; then
+  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install
+fi
+
+# --- Jenkins repo + install ---
+cat >/etc/yum.repos.d/jenkins.repo <<'REPO'
+[jenkins]
+name=Jenkins-stable
+baseurl=https://pkg.jenkins.io/redhat-stable
+gpgcheck=1
+gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2026.key
+REPO
+# Import current signing key explicitly (repo key rotated; 2023 key no longer matches)
+rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2026.key
+dnf install -y jenkins
+
+# --- CI orchestration: config + deploy script (Jenkins jobs call this) ---
+mkdir -p /opt/ci
+cat >/opt/ci/env <<ENV
+REGION="${region}"
+CODEBUILD_PROJECT="${codebuild_project}"
+DEPLOY_DOCUMENT="${deploy_document}"
+APP_INSTANCE_ID="${app_instance_id}"
+DISCORD_WEBHOOK="${discord_webhook}"
+ENV
+
+cat >/opt/ci/deploy.sh <<'DEPLOY'
+#!/bin/bash
+set -uo pipefail
+. /opt/ci/env
+notify() { [ -n "$DISCORD_WEBHOOK" ] && curl -s -H 'Content-Type: application/json' -X POST "$DISCORD_WEBHOOK" -d "{\"content\":\"$1\"}" >/dev/null 2>&1 || true; }
+echo "=== start CodeBuild ==="
+BID=$(aws codebuild start-build --project-name "$CODEBUILD_PROJECT" --region "$REGION" --query 'build.id' --output text)
+echo "build id: $BID"
+while true; do
+  ST=$(aws codebuild batch-get-builds --ids "$BID" --region "$REGION" --query 'builds[0].buildStatus' --output text)
+  echo "build status: $ST"
+  [ "$ST" != "IN_PROGRESS" ] && break
+  sleep 15
+done
+if [ "$ST" != "SUCCEEDED" ]; then notify "GreenCity build FAILED ($ST)"; exit 1; fi
+echo "=== deploy via SSM ==="
+CID=$(aws ssm send-command --document-name "$DEPLOY_DOCUMENT" --targets "Key=InstanceIds,Values=$APP_INSTANCE_ID" --region "$REGION" --query 'Command.CommandId' --output text)
+sleep 10
+while true; do
+  DST=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$APP_INSTANCE_ID" --region "$REGION" --query 'Status' --output text 2>/dev/null || echo Pending)
+  echo "deploy status: $DST"
+  case "$DST" in Success|Failed|Cancelled|TimedOut) break ;; esac
+  sleep 10
+done
+if [ "$DST" = "Success" ]; then notify "GreenCity redeployed to AWS OK"; else notify "GreenCity deploy $DST"; exit 1; fi
+DEPLOY
+chmod +x /opt/ci/deploy.sh
+
+# --- JCasC (security + 3 polling jobs) ---
+mkdir -p /var/lib/jenkins/casc
+cat >/var/lib/jenkins/casc/jenkins.yaml <<'CASC'
+jenkins:
+  systemMessage: "GreenCity CI/CD (AWS): poll -> CodeBuild -> SSM deploy"
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${admin_password}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+jobs:
+%{ for r in jenkins_repos ~}
+  - script: >
+      job('greencity-${r.name}') {
+        description('Auto build+deploy on push to ${r.branch}')
+        scm {
+          git {
+            remote { url('${r.url}') }
+            branch('*/${r.branch}')
+          }
+        }
+        triggers { scm('H/3 * * * *') }
+        steps { shell('/opt/ci/deploy.sh') }
+        logRotator { numToKeep(20) }
+      }
+%{ endfor ~}
+CASC
+
+# --- systemd drop-in: skip setup wizard + point at JCasC ---
+# java.io.tmpdir -> root disk: the default /tmp is a small tmpfs (<1GB) which trips
+# Jenkins' "Free Temp Space" monitor and takes the built-in node offline.
+mkdir -p /var/lib/jenkins/tmp
+mkdir -p /etc/systemd/system/jenkins.service.d
+cat >/etc/systemd/system/jenkins.service.d/override.conf <<'DROP'
+[Service]
+Environment="JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Djava.io.tmpdir=/var/lib/jenkins/tmp"
+Environment="CASC_JENKINS_CONFIG=/var/lib/jenkins/casc/jenkins.yaml"
+DROP
+
+# --- plugins (offline manager) ---
+mkdir -p /var/lib/jenkins/plugins
+curl -sL https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar -o /tmp/pm.jar
+java -jar /tmp/pm.jar --war /usr/share/java/jenkins.war --plugin-download-directory /var/lib/jenkins/plugins --plugins git job-dsl configuration-as-code || true
+
+chown -R jenkins:jenkins /var/lib/jenkins
+systemctl daemon-reload
+systemctl enable jenkins
+systemctl restart jenkins

@@ -1,0 +1,52 @@
+# Hermes agent — bridges an open Hermes model (OpenRouter) to the MCP server,
+# plus a voice-capable web UI. Exposed via NodePort 30890.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: hermes-agent, namespace: observability }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: hermes-agent } }
+  strategy: { type: Recreate }
+  template:
+    metadata: { labels: { app: hermes-agent } }
+    spec:
+      containers:
+        - name: hermes
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - "pip install --no-cache-dir --root-user-action=ignore fastapi uvicorn requests python-multipart >/tmp/pip.log 2>&1 && exec uvicorn hermes_agent:app --host 0.0.0.0 --port 8080 --app-dir /app"
+          ports:
+            - { containerPort: 8080 }
+          env:
+            # LLM via OpenRouter gpt-4o-mini (best detail fidelity + Russian).
+            # For lower latency you can switch to Groq: HERMES_MODEL=llama-3.3-70b-versatile,
+            # LLM_URL=https://api.groq.com/openai/v1/chat/completions, LLM_API_KEY from groq-secret
+            # (but Llama tends to summarize instead of listing details).
+            - { name: HERMES_MODEL, value: "openai/gpt-4o-mini" }
+            - { name: MCP_URL, value: "http://mcp-server.observability.svc.cluster.local:8000/mcp" }
+            - { name: MCP_BEARER_TOKEN, valueFrom: { secretKeyRef: { name: mcp-secret, key: bearer-token } } }
+            - { name: OPENROUTER_API_KEY, valueFrom: { secretKeyRef: { name: openrouter-secret, key: api-key } } }
+            - { name: GROQ_API_KEY, valueFrom: { secretKeyRef: { name: groq-secret, key: api-key } } }
+            - { name: ELEVENLABS_API_KEY, valueFrom: { secretKeyRef: { name: elevenlabs-secret, key: api-key } } }
+          resources:
+            requests: { memory: "128Mi", cpu: "50m" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          volumeMounts:
+            - { name: code, mountPath: /app }
+      volumes:
+        - { name: code, configMap: { name: hermes-code } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: hermes-agent, namespace: observability }
+spec:
+  type: NodePort
+  selector: { app: hermes-agent }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080, nodePort: 30890 }

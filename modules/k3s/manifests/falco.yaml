@@ -1,0 +1,19 @@
+# Falco runtime security via k3s' built-in helm-controller.
+# Installs Falco as a DaemonSet (one pod per node), modern eBPF driver.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: falco
+  namespace: kube-system
+spec:
+  repo: https://falcosecurity.github.io/charts
+  chart: falco
+  targetNamespace: falco
+  createNamespace: true
+  valuesContent: |-
+    driver:
+      kind: modern_ebpf
+    falcosidekick:
+      enabled: false
+    falco:
+      json_output: true

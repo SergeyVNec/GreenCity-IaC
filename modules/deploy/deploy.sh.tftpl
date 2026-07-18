@@ -1,0 +1,74 @@
+#!/bin/bash
+set -uxo pipefail
+
+REGION="${region}"
+REGISTRY="${ecr_registry}"
+DB_HOST="${db_host}"
+DB_NAME="${db_name}"
+DB_USER="${db_user}"
+SECRET_ARN="${db_secret_arn}"
+
+# DB password from Secrets Manager (never stored in the document)
+DB_PASS=$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$SECRET_ARN" \
+  --query SecretString --output text | python3 -c 'import sys,json;print(json.load(sys.stdin)["password"])')
+
+# Log in to ECR
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+# Shared network so containers reach each other by name
+docker network create greencity-net 2>/dev/null || true
+
+# Ship every container's logs to CloudWatch Logs (group per service)
+LOG="--log-driver=awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-create-group=true"
+
+# --- RabbitMQ (dependency of GreenCityUser) ---
+docker rm -f rabbitmq 2>/dev/null || true
+docker run -d --restart unless-stopped --name rabbitmq --network greencity-net \
+  $LOG --log-opt awslogs-group=/greencity/rabbitmq \
+  rabbitmq:3-management
+
+# --- backcore (GreenCityMVP) ---
+docker pull "$REGISTRY/greencity/backcore:latest"
+docker rm -f backcore 2>/dev/null || true
+docker run -d --restart unless-stopped --name backcore --network greencity-net -p 8080:8080 \
+  $LOG --log-opt awslogs-group=/greencity/backcore \
+  -e PROFILE=dev \
+  -e DATASOURCE_URL="jdbc:postgresql://$DB_HOST:5432/$DB_NAME" \
+  -e DATASOURCE_USER="$DB_USER" -e DATASOURCE_PASSWORD="$DB_PASS" \
+  -e RABBITMQ_HOST=rabbitmq -e SPRING_RABBITMQ_HOST=rabbitmq \
+  -e RABBITMQ_USERNAME=guest -e RABBITMQ_PASSWORD=guest \
+  -e GREENCITYUSER_SERVER_ADDRESS="http://backuser:8060" \
+  -e GREENCITY_SERVER_ADDRESS="http://backuser:8060" \
+  -e EMAIL_ADDRESS=changeme -e EMAIL_PASSWORD=changeme \
+  -e GOOGLE_CLIENT_ID=changeme -e GOOGLE_CLIENT_ID_MANAGER=changeme -e GOOGLE_API_KEY=changeme \
+  -e AZURE_CONNECTION_STRING=changeme -e AZURE_CONTAINER_NAME=allfiles \
+  -e CLOUD_NAME=changeme -e API_KEY=changeme -e API_SECRET=changeme \
+  -e BUCKET_NAME=changeme -e STATIC_URL="https://storage.cloud.google.com/" \
+  -e FACEBOOK_APP_ID=changeme -e FACEBOOK_APP_SECRET=changeme \
+  "$REGISTRY/greencity/backcore:latest"
+
+# --- backuser (GreenCityUser) ---
+docker pull "$REGISTRY/greencity/backuser:latest"
+docker rm -f backuser 2>/dev/null || true
+docker run -d --restart unless-stopped --name backuser --network greencity-net -p 8060:8060 \
+  $LOG --log-opt awslogs-group=/greencity/backuser \
+  -e PROFILE=dev \
+  -e DATASOURCE_URL="jdbc:postgresql://$DB_HOST:5432/$DB_NAME" \
+  -e DATASOURCE_USER="$DB_USER" -e DATASOURCE_PASSWORD="$DB_PASS" \
+  -e RABBITMQ_HOST=rabbitmq -e SPRING_RABBITMQ_HOST=rabbitmq \
+  -e RABBITMQ_USERNAME=guest -e RABBITMQ_PASSWORD=guest \
+  -e GREENCITY_SERVER_ADDRESS="http://backcore:8080" \
+  -e EMAIL_ADDRESS=changeme -e EMAIL_PASSWORD=changeme \
+  -e GOOGLE_CLIENT_ID=changeme -e GOOGLE_CLIENT_ID_MANAGER=changeme -e GOOGLE_API_KEY=changeme \
+  "$REGISTRY/greencity/backuser:latest"
+
+# --- frontend (React) — host 4205 -> container 80 ---
+docker pull "$REGISTRY/greencity/frontend:latest"
+docker rm -f frontend 2>/dev/null || true
+docker run -d --restart unless-stopped --name frontend --network greencity-net -p 4205:80 \
+  $LOG --log-opt awslogs-group=/greencity/frontend \
+  "$REGISTRY/greencity/frontend:latest"
+
+docker image prune -f 2>/dev/null || true
+echo "=== deploy done ==="
+docker ps

@@ -1,0 +1,63 @@
+# Centralized k8s pod-log pipeline: OTel Collector as a DaemonSet reading every
+# pod's stdout/stderr from the node and shipping it to Splunk HEC (index otel_logs).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: otel-logs-config, namespace: observability }
+data:
+  config.yaml: |
+    receivers:
+      filelog:
+        include: [ /var/log/pods/*/*/*.log ]
+        start_at: end
+        include_file_path: true
+        operators:
+          - type: container
+    processors:
+      batch: {}
+      resourcedetection:
+        detectors: [env, system]
+        system:
+          hostname_sources: [os]
+    exporters:
+      splunk_hec/logs:
+        token: "11111111-2222-3333-4444-555555555555"
+        endpoint: "https://splunk.observability.svc.cluster.local:8088/services/collector"
+        index: "otel_logs"
+        source: "k8s"
+        sourcetype: "kube:container"
+        tls:
+          insecure_skip_verify: true
+    service:
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: [resourcedetection, batch]
+          exporters: [splunk_hec/logs]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: otel-logs, namespace: observability }
+spec:
+  selector: { matchLabels: { app: otel-logs } }
+  template:
+    metadata: { labels: { app: otel-logs } }
+    spec:
+      # Run on every node, including the tainted observability node.
+      tolerations:
+        - { operator: Exists }
+      containers:
+        - name: otel
+          image: otel/opentelemetry-collector-contrib:latest
+          args: ["--config=/etc/otel/config.yaml"]
+          resources:
+            requests: { memory: "128Mi", cpu: "50m" }
+            limits: { memory: "256Mi" }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otel }
+            - { name: varlogpods, mountPath: /var/log/pods, readOnly: true }
+            - { name: varlibdocker, mountPath: /var/lib/docker/containers, readOnly: true }
+      volumes:
+        - { name: config, configMap: { name: otel-logs-config } }
+        - { name: varlogpods, hostPath: { path: /var/log/pods } }
+        - { name: varlibdocker, hostPath: { path: /var/lib/docker/containers } }

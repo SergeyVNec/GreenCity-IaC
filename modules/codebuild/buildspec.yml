@@ -1,0 +1,101 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+  build:
+    commands:
+      - |
+        set -euxo pipefail
+
+        # ---- Multi-stage Dockerfile for the two Java backends (Maven -> JRE) ----
+        # Base images come from ECR Public (AWS mirror of Docker Official Images):
+        # Docker Hub anonymous pulls are rate-limited (429) from shared CodeBuild IPs.
+        cat > /tmp/backend.Dockerfile <<'DOCKER'
+        FROM public.ecr.aws/docker/library/maven:3.9-eclipse-temurin-21 AS build
+        WORKDIR /src
+        COPY . .
+        RUN mvn -B clean package -Dmaven.test.skip=true -Dformatter.skip=true -Dcheckstyle.skip=true
+        FROM public.ecr.aws/docker/library/eclipse-temurin:21-jre
+        WORKDIR /app
+        COPY --from=build /src/core/target/*.jar app.jar
+        ENTRYPOINT ["java","-jar","/app/app.jar"]
+        DOCKER
+
+        # ---- Multi-stage Dockerfile for the React (CRA) frontend (node -> nginx).
+        #      nginx also reverse-proxies API paths to the backend containers
+        #      (same-origin -> no CORS). REACT_APP_USER_API_URL = ALB origin. ----
+        cat > /tmp/frontend.Dockerfile <<'DOCKER'
+        FROM public.ecr.aws/docker/library/node:18 AS build
+        WORKDIR /app
+        COPY . .
+        ARG REACT_APP_USER_API_URL=http://localhost:8060
+        ENV REACT_APP_USER_API_URL=$REACT_APP_USER_API_URL
+        RUN (npm ci || npm install --legacy-peer-deps) && CI=false npm run build
+        FROM public.ecr.aws/docker/library/nginx:alpine
+        COPY --from=build /app/build/ /usr/share/nginx/html/
+        RUN printf 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  location /mvp/ { proxy_pass http://backcore:8080/; proxy_set_header Host $host; proxy_set_header Origin ""; }\n  location /ownSecurity/ { proxy_pass http://backuser:8060; proxy_set_header Host $host; proxy_set_header Origin ""; }\n  location /user/ { proxy_pass http://backuser:8060; proxy_set_header Host $host; proxy_set_header Origin ""; }\n  location /googleSecurity/ { proxy_pass http://backuser:8060; proxy_set_header Host $host; proxy_set_header Origin ""; }\n  location /googleSecurityHeader/ { proxy_pass http://backuser:8060; proxy_set_header Host $host; proxy_set_header Origin ""; }\n  location / { try_files $uri $uri/ /index.html; }\n}\n' > /etc/nginx/conf.d/default.conf
+        EXPOSE 80
+        DOCKER
+
+        # ---- Continuous Code Inspection: run SonarQube analysis on the cloned
+        #      source. With -Dsonar.qualitygate.wait=true the scanner blocks until
+        #      the Quality Gate result and exits non-zero on FAIL -> build fails
+        #      (set -e) -> Jenkins skips the deploy. Analyzers run in containers so
+        #      no host toolchain is needed. Skipped if SONAR_HOST_URL is unset. ----
+        inspect() {
+          name="$1"; lang="$2"; src="/tmp/src-$name"
+          if [ -z "${SONAR_HOST_URL:-}" ] || [ "$SONAR_HOST_URL" = "PENDING" ]; then echo "SonarQube not configured yet (SONAR_HOST_URL=$SONAR_HOST_URL) - skipping CCI for $name"; return 0; fi
+          echo "=== SonarQube analysis: $name ($lang) ==="
+          if [ "$lang" = java ]; then
+            docker run --rm -v "$src:/src" -w /src public.ecr.aws/docker/library/maven:3.9-eclipse-temurin-21 \
+              mvn -B -e clean compile org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+                -Dmaven.test.skip=true -Dformatter.skip=true -Dcheckstyle.skip=true \
+                -Dsonar.host.url="$SONAR_HOST_URL" -Dsonar.token="$SONAR_TOKEN" \
+                -Dsonar.projectKey="greencity-$name" -Dsonar.projectName="greencity-$name" \
+                -Dsonar.qualitygate.wait=true
+          else
+            docker run --rm -v "$src:/usr/src" sonarsource/sonar-scanner-cli \
+              -Dsonar.projectKey="greencity-$name" -Dsonar.projectName="greencity-$name" \
+              -Dsonar.sources=src \
+              -Dsonar.host.url="$SONAR_HOST_URL" -Dsonar.token="$SONAR_TOKEN" \
+              -Dsonar.qualitygate.wait=true
+          fi
+        }
+
+        # ---- SCA / image scanning with Trivy (dependencies + built image).
+        #      TRIVY_EXIT_CODE=0 -> report only (demo-safe); set to 1 to make
+        #      HIGH/CRITICAL findings fail the build. Runs in a container. ----
+        TRIVY_EXIT_CODE="${TRIVY_EXIT_CODE:-0}"
+        scan_deps() {
+          name="$1"; src="/tmp/src-$name"
+          echo "=== Trivy dependency (fs) scan: $name ==="
+          docker run --rm -v "$src:/scan" public.ecr.aws/aquasecurity/trivy:latest fs \
+            --scanners vuln --severity HIGH,CRITICAL --no-progress \
+            --exit-code "$TRIVY_EXIT_CODE" /scan || return $?
+        }
+        scan_image() {
+          image="$1"
+          echo "=== Trivy image scan: $image ==="
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock public.ecr.aws/aquasecurity/trivy:latest image \
+            --severity HIGH,CRITICAL --no-progress --exit-code "$TRIVY_EXIT_CODE" "$image" || return $?
+        }
+
+        build_and_push() {
+          name="$1"; repo="$2"; branch="$3"; dockerfile="$4"; lang="$5"; extra="${6:-}"
+          echo "=== building $name from $repo ($branch) ==="
+          rm -rf "/tmp/src-$name"
+          git clone --depth 1 --branch "$branch" "$repo" "/tmp/src-$name"
+          inspect "$name" "$lang"
+          scan_deps "$name"
+          image="$ECR_REGISTRY/greencity/$name:latest"
+          docker build $extra -t "$image" -f "$dockerfile" "/tmp/src-$name"
+          scan_image "$image"
+          docker push "$image"
+        }
+
+        build_and_push backcore "$REPO_BACKCORE" "$BRANCH_BACKCORE" /tmp/backend.Dockerfile java
+        build_and_push backuser "$REPO_BACKUSER" "$BRANCH_BACKUSER" /tmp/backend.Dockerfile java
+        build_and_push frontend "$REPO_FRONTEND" "$BRANCH_FRONTEND" /tmp/frontend.Dockerfile node "--build-arg REACT_APP_USER_API_URL=$FRONTEND_API_URL"

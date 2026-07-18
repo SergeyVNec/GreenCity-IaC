@@ -1,0 +1,25 @@
+# Datadog Agent (DaemonSet) via k3s helm-controller.
+# API key comes from the k8s Secret "datadog-secret" (key: api-key), NOT from git.
+# kubelet.tlsVerify=false because k3s' kubelet uses a self-signed cert.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: datadog
+  namespace: kube-system
+spec:
+  repo: https://helm.datadoghq.com
+  chart: datadog
+  targetNamespace: datadog
+  createNamespace: true
+  valuesContent: |-
+    datadog:
+      apiKeyExistingSecret: datadog-secret
+      site: datadoghq.eu
+      clusterName: greencity-k3s
+      logs:
+        enabled: true
+        containerCollectAll: true
+      processAgent:
+        enabled: true
+      kubelet:
+        tlsVerify: false

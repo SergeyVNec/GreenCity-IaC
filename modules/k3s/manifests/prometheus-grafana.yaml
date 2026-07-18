@@ -1,0 +1,232 @@
+# Prometheus + Grafana on k3s, pinned to the dedicated observability node (role=splunk, 8GB).
+# Prometheus scrapes: itself, the OTel Collector (host metrics via prometheus exporter),
+# and kubelet/cAdvisor (per-pod CPU/mem) through the API server proxy.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: prometheus, namespace: observability }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: prometheus }
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, nodes/metrics, services, endpoints, pods]
+    verbs: [get, list, watch]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: prometheus }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: prometheus }
+subjects:
+  - { kind: ServiceAccount, name: prometheus, namespace: observability }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: prometheus-config, namespace: observability }
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+      - job_name: otel-collector
+        static_configs:
+          - targets: ["otel-collector.observability.svc.cluster.local:8889"]
+      - job_name: kubernetes-cadvisor
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: prometheus, namespace: observability }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: prometheus } }
+  strategy: { type: Recreate }
+  template:
+    metadata: { labels: { app: prometheus } }
+    spec:
+      serviceAccountName: prometheus
+      nodeSelector: { role: splunk }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: splunk, effect: NoSchedule }
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=6h"
+          ports:
+            - { containerPort: 9090 }
+          resources:
+            requests: { memory: "300Mi", cpu: "100m" }
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+            - { name: data, mountPath: /prometheus }
+      volumes:
+        - { name: config, configMap: { name: prometheus-config } }
+        - { name: data, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: prometheus, namespace: observability }
+spec:
+  selector: { app: prometheus }
+  ports:
+    - { name: web, port: 9090, targetPort: 9090 }
+---
+# --- Grafana ---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: grafana-datasources, namespace: observability }
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        url: http://prometheus.observability.svc.cluster.local:9090
+        isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: grafana-dashboard-provider, namespace: observability }
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: greencity
+        orgId: 1
+        folder: GreenCity
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: grafana-dashboard-greencity, namespace: observability }
+data:
+  greencity.json: |
+    {
+      "uid": "greencity-app",
+      "title": "GreenCity — Pods (namespace greencity)",
+      "tags": ["greencity"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "15s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "CPU usage by pod (cores)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"greencity\",container!=\"\"}[5m])) by (pod)",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Memory working set by pod",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"greencity\",container!=\"\"}) by (pod)",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Network RX/TX by pod (bytes/s)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+          "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(container_network_receive_bytes_total{namespace=\"greencity\"}[5m])) by (pod)",
+              "legendFormat": "rx {{pod}}"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(container_network_transmit_bytes_total{namespace=\"greencity\"}[5m])) by (pod)",
+              "legendFormat": "tx {{pod}}"
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: grafana, namespace: observability }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: grafana } }
+  strategy: { type: Recreate }
+  template:
+    metadata: { labels: { app: grafana } }
+    spec:
+      nodeSelector: { role: splunk }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: splunk, effect: NoSchedule }
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          env:
+            - { name: GF_SECURITY_ADMIN_PASSWORD, valueFrom: { secretKeyRef: { name: grafana-secret, key: admin-password } } }
+            - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "false" }
+          ports:
+            - { containerPort: 3000 }
+          resources:
+            requests: { memory: "200Mi", cpu: "100m" }
+          volumeMounts:
+            - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
+            - { name: dash-provider, mountPath: /etc/grafana/provisioning/dashboards }
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards }
+      volumes:
+        - { name: datasources, configMap: { name: grafana-datasources } }
+        - { name: dash-provider, configMap: { name: grafana-dashboard-provider } }
+        - { name: dashboards, configMap: { name: grafana-dashboard-greencity } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: grafana, namespace: observability }
+spec:
+  type: NodePort
+  selector: { app: grafana }
+  ports:
+    - { name: web, port: 3000, targetPort: 3000, nodePort: 30300 }

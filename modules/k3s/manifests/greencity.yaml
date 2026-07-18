@@ -1,0 +1,171 @@
+# GreenCity on k3s (namespace greencity).
+# PSS: enforce=baseline (app runs as root), warn/audit=restricted (surfaces stricter violations).
+# Each pod/container gets a hardened securityContext (drop caps, no priv-esc, seccomp).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: greencity
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rabbitmq, namespace: greencity }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: rabbitmq } }
+  template:
+    metadata: { labels: { app: rabbitmq } }
+    spec:
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports: [{ containerPort: 5672 }]
+          securityContext:
+            allowPrivilegeEscalation: false # entrypoint needs SETUID/SETGID/CHOWN, so no drop-all
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rabbitmq, namespace: greencity }
+spec:
+  selector: { app: rabbitmq }
+  ports: [{ port: 5672, targetPort: 5672 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backcore, namespace: greencity }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: backcore } }
+  template:
+    metadata: { labels: { app: backcore } }
+    spec:
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: backcore
+          image: __ECR_REGISTRY__/greencity/backcore:latest
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: PROFILE, value: dev }
+            - { name: DATASOURCE_URL, value: "jdbc:postgresql://__RDS_ENDPOINT__:5432/greencity" }
+            - { name: DATASOURCE_USER, value: greencity }
+            - { name: DATASOURCE_PASSWORD, valueFrom: { secretKeyRef: { name: db-secret, key: password } } }
+            - { name: RABBITMQ_HOST, value: rabbitmq }
+            - { name: SPRING_RABBITMQ_HOST, value: rabbitmq }
+            - { name: RABBITMQ_USERNAME, value: guest }
+            - { name: RABBITMQ_PASSWORD, value: guest }
+            - { name: GREENCITYUSER_SERVER_ADDRESS, value: "http://backuser:8060" }
+            - { name: GREENCITY_SERVER_ADDRESS, value: "http://backuser:8060" }
+            - { name: EMAIL_ADDRESS, value: changeme }
+            - { name: EMAIL_PASSWORD, value: changeme }
+            - { name: GOOGLE_CLIENT_ID, value: changeme }
+            - { name: GOOGLE_CLIENT_ID_MANAGER, value: changeme }
+            - { name: GOOGLE_API_KEY, value: changeme }
+            - { name: AZURE_CONNECTION_STRING, value: changeme }
+            - { name: AZURE_CONTAINER_NAME, value: allfiles }
+            - { name: CLOUD_NAME, value: changeme }
+            - { name: API_KEY, value: changeme }
+            - { name: API_SECRET, value: changeme }
+            - { name: BUCKET_NAME, value: changeme }
+            - { name: STATIC_URL, value: "https://storage.cloud.google.com/" }
+            - { name: FACEBOOK_APP_ID, value: changeme }
+            - { name: FACEBOOK_APP_SECRET, value: changeme }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: backcore, namespace: greencity }
+spec:
+  selector: { app: backcore }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backuser, namespace: greencity }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: backuser } }
+  template:
+    metadata: { labels: { app: backuser } }
+    spec:
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: backuser
+          image: __ECR_REGISTRY__/greencity/backuser:latest
+          ports: [{ containerPort: 8060 }]
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: PROFILE, value: dev }
+            - { name: DATASOURCE_URL, value: "jdbc:postgresql://__RDS_ENDPOINT__:5432/greencity" }
+            - { name: DATASOURCE_USER, value: greencity }
+            - { name: DATASOURCE_PASSWORD, valueFrom: { secretKeyRef: { name: db-secret, key: password } } }
+            - { name: RABBITMQ_HOST, value: rabbitmq }
+            - { name: SPRING_RABBITMQ_HOST, value: rabbitmq }
+            - { name: RABBITMQ_USERNAME, value: guest }
+            - { name: RABBITMQ_PASSWORD, value: guest }
+            - { name: GREENCITY_SERVER_ADDRESS, value: "http://backcore:8080" }
+            - { name: EMAIL_ADDRESS, value: changeme }
+            - { name: EMAIL_PASSWORD, value: changeme }
+            - { name: GOOGLE_CLIENT_ID, value: changeme }
+            - { name: GOOGLE_CLIENT_ID_MANAGER, value: changeme }
+            - { name: GOOGLE_API_KEY, value: changeme }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: backuser, namespace: greencity }
+spec:
+  selector: { app: backuser }
+  ports: [{ port: 8060, targetPort: 8060 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: frontend, namespace: greencity }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: frontend } }
+  template:
+    metadata: { labels: { app: frontend } }
+    spec:
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: frontend
+          image: __ECR_REGISTRY__/greencity/frontend:latest
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: "100m", memory: "64Mi" } # needed for HPA CPU%
+          securityContext:
+            allowPrivilegeEscalation: false # nginx entrypoint needs SETUID/SETGID/CHOWN, so no drop-all
+---
+apiVersion: v1
+kind: Service
+metadata: { name: frontend, namespace: greencity }
+spec:
+  selector: { app: frontend }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: greencity, namespace: greencity }
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port: { number: 80 }

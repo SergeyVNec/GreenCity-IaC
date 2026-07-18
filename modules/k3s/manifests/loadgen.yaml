@@ -1,0 +1,15 @@
+# Temporary load generator — hammers backcore to demonstrate HPA scale-up.
+# Delete after the test: kubectl -n greencity delete deploy loadgen
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: loadgen, namespace: greencity }
+spec:
+  replicas: 8
+  selector: { matchLabels: { app: loadgen } }
+  template:
+    metadata: { labels: { app: loadgen } }
+    spec:
+      containers:
+        - name: load
+          image: busybox
+          command: ["/bin/sh", "-c", "while true; do wget -q -O /dev/null http://backcore:8080/ 2>/dev/null; done"]
