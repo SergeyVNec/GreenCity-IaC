@@ -39,7 +39,7 @@ flowchart TB
             O5["Datadog + SonarQube"]
         end
         subgraph OPS["AI ChatOps"]
-            M1["MCP server :30880<br/>9 tools, bearer auth"]
+            M1["MCP server :30880<br/>13 tools, bearer auth"]
             M2["Hermes agent :30890<br/>gpt-4o-mini + MCP"]
         end
     end

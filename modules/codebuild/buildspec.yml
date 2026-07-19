@@ -33,6 +33,8 @@ phases:
         COPY . .
         ARG REACT_APP_USER_API_URL=http://localhost:8060
         ENV REACT_APP_USER_API_URL=$REACT_APP_USER_API_URL
+        ARG REACT_APP_GOOGLE_CLIENT_ID=""
+        ENV REACT_APP_GOOGLE_CLIENT_ID=$REACT_APP_GOOGLE_CLIENT_ID
         RUN (npm ci || npm install --legacy-peer-deps) && CI=false npm run build
         FROM public.ecr.aws/docker/library/nginx:alpine
         COPY --from=build /app/build/ /usr/share/nginx/html/
@@ -98,4 +100,4 @@ phases:
 
         build_and_push backcore "$REPO_BACKCORE" "$BRANCH_BACKCORE" /tmp/backend.Dockerfile java
         build_and_push backuser "$REPO_BACKUSER" "$BRANCH_BACKUSER" /tmp/backend.Dockerfile java
-        build_and_push frontend "$REPO_FRONTEND" "$BRANCH_FRONTEND" /tmp/frontend.Dockerfile node "--build-arg REACT_APP_USER_API_URL=$FRONTEND_API_URL"
+        build_and_push frontend "$REPO_FRONTEND" "$BRANCH_FRONTEND" /tmp/frontend.Dockerfile node "--build-arg REACT_APP_USER_API_URL=$FRONTEND_API_URL --build-arg REACT_APP_GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"

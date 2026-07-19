@@ -220,7 +220,7 @@ Invoke-Node @(
     "echo '$mcpCode' | base64 -d > /tmp/mcp-server.py",
     "k3s kubectl -n observability create configmap mcp-code --from-file=server.py=/tmp/mcp-server.py --dry-run=client -o yaml | k3s kubectl apply -f -"
 ) | Out-Null
-Apply-Manifest "mcp/mcp-server.yaml"
+Apply-Manifest "mcp/mcp-server.yaml" @{ "__RDS_ENDPOINT__" = $RdsEndpoint; "__DB_SECRET_ARN__" = $DbSecretArn }
 
 $hermesCode = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $manifests "hermes/hermes_agent.py")))
 Invoke-Node @(

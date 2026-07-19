@@ -19,6 +19,12 @@ variable "frontend_api_url" {
   default     = "http://localhost:8060"
 }
 
+variable "google_client_id" {
+  description = "Google OAuth client ID baked into the React build. A placeholder lets the app boot (Google login won't work); set a real ID for working Google sign-in."
+  type        = string
+  default     = "000000000000-placeholder.apps.googleusercontent.com"
+}
+
 variable "repo_backcore" {
   type    = string
   default = "https://github.com/GreenCity-UA-4823-4826/GreenCityMVP.git"

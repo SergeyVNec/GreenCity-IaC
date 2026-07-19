@@ -70,8 +70,64 @@ first CodeBuild. At the end it prints all URLs and the generated MCP token.
 
 - **Windows voice agent** (`windows-agent/.env`): set
   `GREENCITY_BACKEND=http://<observability_eip>:30890`.
-- **Domain** (optional): CNAME your hostname to the ALB DNS
-  (`terraform output alb_dns_name`), Cloudflare SSL = Flexible.
+
+## 5. Optional configuration
+
+### Google sign-in (real OAuth)
+
+The frontend is built with a **placeholder** `REACT_APP_GOOGLE_CLIENT_ID`, so the site
+opens but the "Sign in with Google" button won't actually work. For working Google
+login:
+
+1. Create an **OAuth 2.0 Client ID** in the
+   [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   (type *Web application*). Add your site origin(s) to **Authorized JavaScript
+   origins** — the ALB URL and/or your domain.
+2. Put the ID in `terraform.tfvars`:
+   ```hcl
+   google_client_id = "1234567890-abc123....apps.googleusercontent.com"
+   ```
+3. Apply and rebuild the frontend so the new value is baked in:
+   ```powershell
+   terraform apply -auto-approve -target='module.codebuild'
+   aws codebuild start-build --project-name greencity-build --region us-east-1
+   ```
+   Jenkins auto-deploys the new image to the app host after the build; to redeploy
+   immediately, run the deploy document by hand:
+   ```powershell
+   aws ssm send-command --document-name greencity-deploy --region us-east-1 `
+     --instance-ids (terraform output -raw app_instance_id)
+   ```
+
+### Custom domain via Cloudflare (with HTTPS)
+
+The ALB is plain HTTP. Cloudflare gives you a nice domain **and free HTTPS** in front
+of it, with no cert to manage on AWS.
+
+1. **Add your domain to Cloudflare** (Add a Site) and, at your registrar (e.g. nic.ua),
+   change the domain's **nameservers** to the two Cloudflare gives you. Wait for it to
+   go *Active* (minutes to a few hours).
+2. **DNS record** in Cloudflare → *DNS*:
+   - Type **CNAME**, Name `@` (or a subdomain like `app`), Target =
+     `terraform output alb_dns_name`, Proxy status **Proxied** (orange cloud).
+   - Root-domain CNAME is fine on Cloudflare (it flattens it automatically).
+3. **SSL/TLS mode = Flexible** (Cloudflare → *SSL/TLS* → *Overview*). Browser↔Cloudflare
+   is HTTPS; Cloudflare↔ALB stays HTTP — no certificate needed on the ALB.
+4. **Rebuild the frontend for the domain** so API calls and the same-origin nginx proxy
+   use it (avoids CORS). Set the origin and rebuild:
+   ```hcl
+   # terraform.tfvars
+   frontend_api_url = "https://your-domain"
+   ```
+   ```powershell
+   terraform apply -auto-approve -target='module.codebuild'
+   aws codebuild start-build --project-name greencity-build --region us-east-1
+   ```
+5. Open `https://your-domain`. If Google login is set up, add the domain to the OAuth
+   *Authorized JavaScript origins* too.
+
+> Note: the ALB DNS name changes on every `terraform destroy`/`apply`, so update the
+> Cloudflare CNAME target after a rebuild.
 
 ## Teardown
 

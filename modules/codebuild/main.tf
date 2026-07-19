@@ -122,6 +122,10 @@ resource "aws_codebuild_project" "build" {
       name  = "FRONTEND_API_URL"
       value = var.frontend_api_url
     }
+    environment_variable {
+      name  = "GOOGLE_CLIENT_ID"
+      value = var.google_client_id
+    }
     # SonarQube (CCI) — pulled from SSM Parameter Store, token is a SecureString.
     # Created here with a "PENDING" placeholder so early Jenkins-triggered builds can
     # always resolve the env (they just skip CCI); setup-cluster.ps1 overwrites the

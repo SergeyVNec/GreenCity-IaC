@@ -27,6 +27,11 @@ SONAR_TOKEN = os.environ.get("SONAR_TOKEN", "")
 CODEBUILD_PROJECT = os.environ.get("CODEBUILD_PROJECT", "greencity-build")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEARER = os.environ.get("MCP_BEARER_TOKEN", "")
+RDS_HOST = os.environ.get("RDS_HOST", "")
+DB_NAME = os.environ.get("DB_NAME", "greencity")
+DB_USER = os.environ.get("DB_USER", "greencity")
+DB_SECRET_ARN = os.environ.get("DB_SECRET_ARN", "")
+_DB_PASS = None
 
 kconfig.load_incluster_config()
 _apps = client.AppsV1Api()
@@ -96,6 +101,80 @@ def get_falco_alerts(count: int = 20) -> str:
         data={"search": spl, "exec_mode": "oneshot", "output_mode": "json"},
     )
     return r.text[:6000]
+
+
+def _db_password() -> str:
+    global _DB_PASS
+    if _DB_PASS is None:
+        import boto3
+        sm = boto3.client("secretsmanager", region_name=REGION)
+        _DB_PASS = json.loads(sm.get_secret_value(SecretId=DB_SECRET_ARN)["SecretString"])["password"]
+    return _DB_PASS
+
+
+@mcp.tool()
+def query_db(sql: str) -> str:
+    """Query the GreenCity application PostgreSQL database (READ-ONLY SELECT).
+    USE THIS for any question about application data: registered users, how many
+    users, emails, accounts, records in a table. Table `users` has columns
+    id, email, name. Examples: 'SELECT count(*) FROM users',
+    'SELECT id, email, name FROM users ORDER BY id DESC'. Only SELECT is allowed."""
+    if not RDS_HOST or not DB_SECRET_ARN:
+        return "database access not configured (RDS_HOST/DB_SECRET_ARN)"
+    s = sql.strip().rstrip(";")
+    low = s.lower()
+    if not low.startswith("select"):
+        return "only SELECT queries are allowed"
+    if any(k in low for k in (";", "insert ", "update ", "delete ", "drop ", "alter ",
+                              "truncate ", "create ", "grant ", "revoke ", "copy ")):
+        return "query rejected: read-only SELECT only"
+    if " limit " not in low:
+        s += " LIMIT 200"
+    import pg8000.native
+    con = pg8000.native.Connection(user=DB_USER, host=RDS_HOST, database=DB_NAME,
+                                   password=_db_password(), port=5432, timeout=15)
+    try:
+        rows = con.run(s)
+        cols = [c["name"] for c in con.columns]
+        return json.dumps([dict(zip(cols, r)) for r in rows], indent=2, default=str)
+    except Exception as e:
+        return f"query error: {e}"
+    finally:
+        con.close()
+
+
+@mcp.tool()
+def get_pod_logs(pod_name: str, namespace: str = "greencity", lines: int = 50) -> str:
+    """Return the last N log lines of a pod (direct, not via Splunk)."""
+    try:
+        return _core.read_namespaced_pod_log(pod_name, namespace, tail_lines=lines)[:6000]
+    except Exception as e:
+        return f"error: {e}"
+
+
+@mcp.tool()
+def list_deployments(namespace: str = "greencity") -> str:
+    """List deployments in a namespace with desired/ready replica counts."""
+    out = []
+    for d in _apps.list_namespaced_deployment(namespace).items:
+        out.append({"name": d.metadata.name,
+                    "desired": d.spec.replicas,
+                    "ready": d.status.ready_replicas or 0})
+    return json.dumps(out, indent=2)
+
+
+@mcp.tool()
+def get_recent_builds(count: int = 5) -> str:
+    """Recent CodeBuild pipeline runs with status and start time."""
+    import boto3
+    cb = boto3.client("codebuild", region_name=REGION)
+    ids = cb.list_builds_for_project(projectName=CODEBUILD_PROJECT, sortOrder="DESCENDING").get("ids", [])[:count]
+    if not ids:
+        return "no builds found"
+    builds = cb.batch_get_builds(ids=ids)["builds"]
+    out = [{"id": b["id"].split(":")[-1][:8], "status": b["buildStatus"],
+            "start": str(b.get("startTime", ""))[:19]} for b in builds]
+    return json.dumps(out, indent=2)
 
 
 # ============================== ACTION TOOLS ==============================

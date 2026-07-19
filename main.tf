@@ -77,6 +77,7 @@ module "codebuild" {
   region           = var.region
   ecr_registry     = module.ecr.registry_url
   frontend_api_url = var.frontend_api_url != "" ? var.frontend_api_url : module.alb.alb_dns_name
+  google_client_id = var.google_client_id
 }
 
 module "alb" {

@@ -131,15 +131,62 @@ git push ─► Jenkins (pollSCM every ~1 min) ─► CodeBuild:
 
 ## 8. AI ChatOps + voice assistant
 
-- **MCP server** (`greencity-ops`) exposes 9 tools over the Model Context Protocol, bearer-guarded:
-  read-only (`get_pod_status`, `query_prometheus`, `search_splunk`, `get_quality_gate`,
-  `get_falco_alerts`) and actions (`scale_deployment`, `restart_pod`, `rollout_restart`,
-  `trigger_build`).
+- **MCP server** (`greencity-ops`) exposes 13 tools over the Model Context Protocol, bearer-guarded:
+  read-only (`get_pod_status`, `list_deployments`, `get_pod_logs`, `query_prometheus`,
+  `search_splunk`, `get_quality_gate`, `get_falco_alerts`, `query_db`, `get_recent_builds`) and
+  actions (`scale_deployment`, `restart_pod`, `rollout_restart`, `trigger_build`).
 - **Hermes agent** bridges an LLM (gpt-4o-mini via OpenRouter) to the MCP tools and serves a
   web UI. Model is pluggable via env.
 - **Windows voice agent** (`windows-agent/`): wake word (openWakeWord, offline) → Groq Whisper
   (STT) → gpt-4o-mini + MCP → ElevenLabs (TTS). Runs as a tray app, autostarts with Windows,
   needs **no API keys on the client** (all live in the cluster).
+
+### How to talk to it
+
+- **Voice:** run the tray app, say the wake word **"hey jarvis"**, then speak a command
+  (Russian). Answers are spoken back.
+- **Text (browser):** open `http://<observability_eip>:30890` and type.
+- **Text (CLI):**
+  ```powershell
+  curl.exe -s -X POST http://<observability_eip>:30890/chat -H "Content-Type: application/json" -d "{\"message\":\"сколько подов в greencity\"}"
+  ```
+
+Answers are **short by default** (voice-friendly). Ask for a full list with words like
+*подробно / детально / полную статистику / список / по каждому*.
+
+### Available commands (the 9 MCP tools)
+
+**Read-only — inspection**
+
+| Tool | What it does | Example phrase (RU) |
+|---|---|---|
+| `get_pod_status` | pod status in a namespace | «покажи статус подов greencity» · «сколько подов запущено» · «покажи полную статистику подов» |
+| `list_deployments` | deployments with desired/ready replicas | «покажи деплойменты» · «сколько реплик у backcore» |
+| `get_pod_logs` | last N log lines of a pod (direct) | «покажи логи пода backcore-xxxx» · «последние 100 строк логов backuser» |
+| `query_prometheus` | run a PromQL query | «загрузка CPU у backcore» · «сколько памяти ест backuser» |
+| `search_splunk` | search logs in Splunk | «найди ошибки в логах backcore» · «покажи логи rabbitmq» |
+| `get_quality_gate` | SonarQube Quality Gate of a project | «какой Quality Gate у backcore» · «прошёл ли backuser проверку качества» |
+| `get_falco_alerts` | recent Falco runtime-security alerts | «есть ли алерты Falco» · «что подозрительного в кластере» |
+| `query_db` | READ-ONLY SQL to the app database (users, records) | «сколько пользователей зарегистрировано» · «покажи последних пользователей» · «есть ли email X в базе» |
+| `get_recent_builds` | recent CodeBuild runs + status | «покажи последние сборки» · «прошла ли последняя сборка» |
+
+**Actions — change state** (the assistant states what it's doing, then does it)
+
+| Tool | What it does | Example phrase (RU) |
+|---|---|---|
+| `scale_deployment` | change a deployment's replica count | «отмасштабируй backuser до 3 реплик» · «сделай backcore 2 реплики» |
+| `restart_pod` | delete a pod so it's recreated | «перезапусти под backcore-xxxx» · «убей зависший под rabbitmq» |
+| `rollout_restart` | rolling restart (pull fresh image) | «перекати backcore» · «обнови frontend до последнего образа» |
+| `trigger_build` | start a CodeBuild run (CI + CCI + SCA) | «запусти сборку» · «собери новые образы» |
+
+**Combined scenarios** — the model chains tools automatically, e.g.
+*«почему backuser не работает?»* → `get_pod_status` + `search_splunk` → diagnosis;
+*«готов ли backcore к релизу?»* → `get_quality_gate`.
+
+**Scope & limits:** actions target namespace `greencity` (RBAC-restricted to pods + deployment
+scaling); the only cloud action is `codebuild:StartBuild`. The assistant won't delete namespaces,
+edit secrets, touch nodes, or run arbitrary `kubectl`. On HPA-managed deployments a manual
+`scale_deployment` is overridden by the HPA — scale by load instead.
 
 ## 9. Access (per-deployment — read from `terraform output`)
 

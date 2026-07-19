@@ -101,7 +101,7 @@ resource "aws_iam_role_policy" "secrets" {
 # Let the in-cluster MCP server start CI builds (trigger_build tool, via node role/IMDS)
 data "aws_iam_policy_document" "codebuild" {
   statement {
-    actions   = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"]
+    actions   = ["codebuild:StartBuild", "codebuild:BatchGetBuilds", "codebuild:ListBuildsForProject"]
     resources = ["*"]
   }
 }

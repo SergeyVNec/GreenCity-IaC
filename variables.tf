@@ -57,3 +57,9 @@ variable "frontend_api_url" {
   type        = string
   default     = ""
 }
+
+variable "google_client_id" {
+  description = "Google OAuth client ID baked into the frontend build. The default placeholder lets the site open (Google login disabled); set a real ID in terraform.tfvars for working Google sign-in."
+  type        = string
+  default     = "000000000000-placeholder.apps.googleusercontent.com"
+}

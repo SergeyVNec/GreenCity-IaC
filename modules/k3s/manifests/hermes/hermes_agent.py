@@ -67,6 +67,12 @@ SYSTEM_TMPL = (
     '<tool_call>{{"name": "<tool_name>", "arguments": <json-args>}}</tool_call>\n'
     "You will then receive the result inside <tool_response></tool_response>. "
     "Use it to answer. Always call a tool to get real data instead of guessing. "
+    "Pick the tool by TOPIC:\n"
+    "- registered users / accounts / emails / how many users / records in the database -> query_db\n"
+    "- pods status / how many pods -> get_pod_status ; deployments/replicas -> list_deployments\n"
+    "- CPU/memory metrics -> query_prometheus ; logs -> search_splunk or get_pod_logs\n"
+    "- code quality / quality gate -> get_quality_gate ; security alerts -> get_falco_alerts\n"
+    "- CI builds history -> get_recent_builds ; start a build -> trigger_build\n"
     "NEVER ask the user to clarify — act with sensible defaults: assume namespace "
     "'greencity'; if a project key is needed and none is given, use 'greencity-backcore'. "
     "Reply in plain Russian. {fmt_rule} "
@@ -79,6 +85,7 @@ _mcp_headers = {
     "Authorization": f"Bearer {MCP_TOKEN}",
     "Accept": "application/json, text/event-stream",
     "Content-Type": "application/json",
+    "MCP-Protocol-Version": "2024-11-05",  # newer mcp SDK returns 400 without it
 }
 
 
@@ -169,7 +176,8 @@ def chat(req: Chat):
         # Deterministically pick answer length from the request wording, so the
         # model gets one unambiguous instruction instead of a conditional it ignores.
         detail_words = ("подробно", "детальн", "полн", "по каждому", "перечисли",
-                        "список", "статистик", "все поды", "каждый под")
+                        "список", "статистик", "все поды", "каждый под",
+                        "имейл", "имэйл", "email", "почт", "адрес", "какие", "выведи")
         if any(w in req.message.lower() for w in detail_words):
             fmt_rule = ("Ответь НУМЕРОВАННЫМ СПИСКОМ: перечисли КАЖДЫЙ элемент из результата "
                         "инструмента со всеми полями (для пода: имя, статус, готовность, "
